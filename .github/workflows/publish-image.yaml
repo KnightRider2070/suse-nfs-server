@@ -23,7 +23,7 @@ jobs:
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository }}
-      IMAGE_NAME_LOWER: ${{ github.repository_owner }}/suse-nfs-server
+      IMAGE_NAME_LOWER: knightrider2070/suse-nfs-server
 
     steps:
       # 🔹 Checkout repository
