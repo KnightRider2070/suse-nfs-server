@@ -9,9 +9,6 @@
 **Supports NFSv3 & NFSv4** – Compatible with modern clients  
 **Containerized for Flexibility** – Runs seamlessly in **Docker & Kubernetes**  
 **No Docker Volume Required** – Uses a **loopback ext4 filesystem** for persistence  
-**Dynamic Storage Configuration** – **Adjust NFS size at runtime** using environment variables  
-**Pre-configured Exports** – Ready-to-use for **multi-container setups**  
-**Lightweight & Minimal Dependencies** – Uses `rpcbind`, `nfs-kernel-server`, `rpc.mountd`
 
 ---
 
@@ -98,34 +95,19 @@ For **NFSv3**:
 mount -t nfs -o vers=3 172.17.0.2:/mnt/nfs-share /mnt/nfs
 ```
 
-### **🔹 macOS (Untested)**
-
-Install NFS client tools (already included on most macOS systems). Then:
-
-```sh
-sudo mount -t nfs -o vers=4,hard,nolock 172.17.0.2:/mnt/nfs-share /mnt/nfs
-```
-
-> Some macOS versions might require additional flags (e.g., `resvport`).
-
-### **🔹 Windows (WSL2) (Untested)**
-
-WSL2 supports NFS mounting in newer builds. For example:
-
-```powershell
-mount -t nfs -o vers=4 172.17.0.2:/mnt/nfs-share /mnt/nfs
-```
-
-> If you encounter permissions issues, confirm WSL’s NFS client settings or use Samba as an alternative.
-
 ---
 
 ## **🌍 Contribute & Get Support**
 
 💡 **Contributions welcome!** If you have improvements or bug fixes, feel free to submit a PR or create an issue.
 
-🔗 **GitHub:** [https://github.com/KnightRider2070/suse-nfs-server]
-🐞 **Issues:** [https://github.com/KnightRider2070/suse-nfs-server/issues]
+🔗 **GitHub Repository:**  
+[![GitHub](https://img.shields.io/badge/GitHub-Repo-blue?logo=github&style=flat-square)](https://github.com/KnightRider2070/suse-nfs-server)  
+Browse the source code, fork the project, and submit pull requests.
+
+🐞 **Report Issues & Request Features:**  
+[![GitHub Issues](https://img.shields.io/badge/GitHub-Issues-red?logo=github&style=flat-square)](https://github.com/KnightRider2070/suse-nfs-server/issues)  
+If you encounter problems, report them on GitHub Issues.
 
 ---
 
