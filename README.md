@@ -50,6 +50,7 @@ docker run -d --name nfs-server --privileged \
 |---------------|---------|-----------------------------------------------|
 | `NFS_SIZE_MB` | `100`   | Set NFS storage size dynamically (in MB)      |
 | `MONITOR_INTERVAL` | `1` | Frequency (in seconds) to check connections  |
+| `USE_GANESHA` | `0` | If set to `1` (or `true`), run NFS Ganesha (user-space NFS) instead of kernel nfsd |
 
 If you want to customize further (e.g., the exports file or mount options), simply build your own image with additional configuration.
 
@@ -112,3 +113,38 @@ If you encounter problems, report them on GitHub Issues.
 ---
 
 Enjoy a **lightweight**, **flexible** NFS server experience on openSUSE Leap!
+
+---
+
+## Using NFS Ganesha (optional)
+
+This image can run either the kernel NFS server (default) or NFS Ganesha (user-space NFS server).
+
+To use Ganesha set the environment variable `USE_GANESHA=1` when running the container. Example:
+
+```sh
+docker run -d --name nfs-ganesha --privileged \
+  -e NFS_SIZE_MB=1024 \
+  -e USE_GANESHA=1 \
+  -p 2049:2049 \
+  ghcr.io/knightrider2070/suse-nfs-server
+```
+
+Notes:
+- The image will attempt to install `nfs-ganesha` at build time; if the package is not
+  available on the chosen base repository, the build will continue but Ganesha won't be present in the image.
+- A default config is provided at `/etc/ganesha/ganesha.conf` that exports `/mnt/nfs-share` using the VFS FSAL.
+- Ganesha logs will be written to `/var/log/ganesha.log` and general runtime logs to `/var/log/nfs-server.log`.
+
+Important notes about NFS Ganesha and NFSv4
+
+- NFS Ganesha is typically used as an NFSv4 server only. The default `config/ganesha.conf`
+  included with this project configures Ganesha for NFSv4 (see `Protocols = 4;`).
+- NFSv4 (as served by Ganesha) does not use kernel `rpc.mountd` or interact with `rpcbind`
+  in the same way as kernel-space NFS. As a result, client tools that rely on the RPC
+  portmapper protocol (for example `showmount`) will not list exports served by Ganesha.
+  This is expected behaviour — Ganesha advertises NFSv4 exports differently.
+- If you need to verify Ganesha exports, check `/var/log/ganesha.log` or use NFSv4-aware
+  client commands to mount and test the export directly (e.g., `mount -t nfs4`).
+
+If you prefer to run a custom Ganesha configuration, mount your config file into the container at `/etc/ganesha/ganesha.conf`.

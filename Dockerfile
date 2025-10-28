@@ -8,11 +8,17 @@ FROM opensuse/leap:15.5
 ENV ZYPP_NO_TTY=1 \
     NFS_SIZE_MB=100 \
     MONITOR_INTERVAL=1
+ENV USE_GANESHA=0
 
 # Install required packages
 RUN zypper --non-interactive ref && \
+    # Install kernel NFS server + common utilities. Attempt to install nfs-ganesha as well
+    # if it's available in the repositories. The install will continue even if
+    # nfs-ganesha isn't present (builds on systems without the package will not fail).
     zypper --non-interactive install -y \
-    nfs-kernel-server rpcbind nfs-client e2fsprogs iproute2 && \
+    nfs-kernel-server rpcbind nfs-client e2fsprogs iproute2 || true && \
+    # Try installing nfs-ganesha; ignore errors if not available
+    zypper --non-interactive install -y nfs-ganesha || true && \
     zypper clean --all
 
 # Create necessary directories and NFS share
@@ -27,6 +33,10 @@ EXPOSE 2049/tcp 2049/udp 20048/tcp 20048/udp
 # Copy the entrypoint script and make it executable
 COPY ./entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Copy a default Ganesha configuration. If the image doesn't have Ganesha package,
+# this file is harmless; if Ganesha is installed and enabled at runtime it will use this.
+COPY ./config/ganesha.conf /etc/ganesha/ganesha.conf
 
 # Use entrypoint script for service management
 CMD ["/entrypoint.sh"]

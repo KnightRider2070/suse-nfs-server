@@ -11,6 +11,14 @@ log() {
 log "Starting NFS Server..."
 log "System Info: $(uname -a)"
 
+# Determine whether to use Ganesha (user-space NFS) or kernel NFS server
+USE_GANESHA=${USE_GANESHA:-0}
+if [[ "$USE_GANESHA" =~ ^(1|yes|true|on)$ ]]; then
+    log "USE_GANESHA is enabled — starting NFS Ganesha instead of kernel NFSd"
+else
+    log "Using kernel NFS server (default behavior)"
+fi
+
 # Get the runtime-configurable NFS storage size (default: 100MB)
 NFS_SIZE_MB=${NFS_SIZE_MB:-100}
 log "Configuring NFS share with size: ${NFS_SIZE_MB}MB"
@@ -34,27 +42,51 @@ mount -o loop /nfs-disk.img /mnt/nfs-share || {
     exit 1
 }
 
-# Ensure the NFS kernel module is available
-mkdir -p /proc/fs/nfsd
-mount -t nfsd nfsd /proc/fs/nfsd
+if [[ "$USE_GANESHA" =~ ^(1|yes|true|on)$ ]]; then
+    # NFS Ganesha (user-space) is typically NFSv4-only and does not interact with
+    # kernel-space nfsd, rpc.mountd or rpcbind the same way kernel NFS does. Skip
+    # starting kernel NFS subsystems and start ganesha directly.
+    log "USE_GANESHA enabled — starting NFS Ganesha (NFSv4). Skipping kernel nfsd/rpc.mountd/rpcbind."
 
-log "Starting rpcbind..."
-rpcbind -w -d &>>"$LOG_FILE"
-sleep 2
+    # Ensure Ganesh config exists at expected location; if not, warn
+    if [ ! -f /etc/ganesha/ganesha.conf ]; then
+        log "⚠️  Ganesha config not found at /etc/ganesha/ganesha.conf — using embedded defaults may fail"
+    else
+        log "Using Ganesha config: /etc/ganesha/ganesha.conf"
+    fi
 
-log "Starting rpc.statd..."
-rpc.statd --no-notify -F &>>"$LOG_FILE" &
-sleep 2
+    log "Starting NFS Ganesha (ganesha.nfsd) in background..."
+    if command -v ganesha.nfsd >/dev/null 2>&1; then
+        # Start ganesha in foreground-style background so container stays alive
+        ganesha.nfsd -L /var/log/ganesha.log &>>"$LOG_FILE" &
+        sleep 2
+        log "Ganesha started (pid: $!)"
+    else
+        log "❌ ganesha.nfsd binary not found. Is nfs-ganesha installed?"
+    fi
+else
+    # Ensure the NFS kernel module is available
+    mkdir -p /proc/fs/nfsd
+    mount -t nfsd nfsd /proc/fs/nfsd
 
-log "Exporting NFS shares..."
-exportfs -rv | tee -a "$LOG_FILE"
+    log "Starting rpcbind..."
+    rpcbind -w -d &>>"$LOG_FILE"
+    sleep 2
 
-log "Starting rpc.nfsd ..."
-rpc.nfsd -N 2 &>>"$LOG_FILE"
-sleep 2
+    log "Starting rpc.statd..."
+    rpc.statd --no-notify -F &>>"$LOG_FILE" &
+    sleep 2
 
-log "Starting rpc.mountd..."
-rpc.mountd -N 2 -V 4 -p 20048 &>>"$LOG_FILE" &
+    log "Exporting NFS shares..."
+    exportfs -rv | tee -a "$LOG_FILE"
+
+    log "Starting rpc.nfsd ..."
+    rpc.nfsd -N 2 &>>"$LOG_FILE"
+    sleep 2
+
+    log "Starting rpc.mountd..."
+    rpc.mountd -N 2 -V 4 -p 20048 &>>"$LOG_FILE" &
+fi
 
 MONITOR_INTERVAL=${MONITOR_INTERVAL:-1}
 log "Monitoring NFS client connections every ${MONITOR_INTERVAL} seconds..."
