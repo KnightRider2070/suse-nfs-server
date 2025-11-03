@@ -44,7 +44,7 @@ docker run -d --name nfs-server \
   ghcr.io/knightrider2070/suse-nfs-server
 ```
 
-> **Note**: The `--privileged` flag is **NOT required** when using NFS-Ganesha! The container runs with minimal capabilities for enhanced security.
+> **🔒 Security Note**: Unlike traditional kernel NFS servers, **NFS-Ganesha does NOT require `--privileged` mode**! This container runs securely with minimal Linux capabilities, making it suitable for production environments with strict security policies.
 
 ---
 
@@ -73,6 +73,47 @@ Instead of running with `--privileged`, only the following capabilities are need
 - `NET_BIND_SERVICE` – Bind to privileged ports (< 1024)
 - `SETGID` – Make arbitrary manipulations of process GIDs
 - `SETUID` – Make arbitrary manipulations of process UIDs
+
+### How to Run Without Privileged Mode
+
+**NFS-Ganesha was specifically designed to run as a user-space process**, eliminating the need for privileged containers that traditional kernel NFS servers require. Here's how to leverage this security benefit:
+
+**❌ Old Way (Kernel NFS - Requires Privileged Mode):**
+```bash
+# Kernel NFS requires --privileged flag
+docker run -d --privileged \
+  -p 2049:2049 \
+  old-kernel-nfs-image
+```
+
+**✅ New Way (NFS-Ganesha - No Privileged Mode Needed):**
+```bash
+# Option 1: Maximum Security - Drop all capabilities, add only what's needed
+docker run -d --name nfs-server \
+  --cap-drop ALL \
+  --cap-add CHOWN \
+  --cap-add DAC_OVERRIDE \
+  --cap-add FOWNER \
+  --cap-add FSETID \
+  --cap-add NET_BIND_SERVICE \
+  --cap-add SETGID \
+  --cap-add SETUID \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -e NFS_SIZE_MB=500 \
+  ghcr.io/knightrider2070/suse-nfs-server
+
+# Option 2: Simple Mode - Let Docker use default capabilities (still secure)
+docker run -d --name nfs-server \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -e NFS_SIZE_MB=1024 \
+  ghcr.io/knightrider2070/suse-nfs-server
+```
+
+**Key Benefits:**
+- 🔒 **Reduced Attack Surface** – Only 7 specific capabilities vs. full system access
+- 🛡️ **Container Isolation** – No access to host kernel modules or `/proc/fs/nfsd`
+- ☁️ **Cloud-Native** – Compatible with security-restricted environments (Kubernetes, cloud platforms)
+- 🚀 **Production-Ready** – Meets enterprise security requirements without privileged mode
 
 ### Why NFS-Ganesha?
 
