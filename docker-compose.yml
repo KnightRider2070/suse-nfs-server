@@ -1,0 +1,50 @@
+version: "3.8"
+
+services:
+  nfs-ganesha-server:
+    build: .
+    container_name: nfs-ganesha-server
+
+    # Security: Drop all capabilities and add only what's needed
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN # Change file ownership
+      - DAC_OVERRIDE # Bypass file permission checks
+      - FOWNER # Bypass permission checks on file operations
+      - FSETID # Don't clear setuid/setgid bits
+      - NET_BIND_SERVICE # Bind to privileged ports (< 1024)
+      - SETGID # Set process GID
+      - SETUID # Set process UID
+
+    # Ports
+    ports:
+      - "2049:2049/tcp" # NFS v4
+      - "2049:2049/udp" # NFS v4
+      - "20048:20048/tcp" # MountD
+      - "20048:20048/udp" # MountD
+      - "111:111/tcp" # RPCBind
+      - "111:111/udp" # RPCBind
+
+    # Environment variables
+    environment:
+      - NFS_SIZE_MB=2048 # 2GB NFS storage
+      - NFS_PORT=2049
+      - MOUNTD_PORT=20048
+
+    # Volumes for persistent data (optional)
+    # Uncomment the volumes section below to customize
+    # volumes:
+    #   - ./config/ganesha.conf:/etc/ganesha/ganesha.conf:ro
+    #   - ./data:/data
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Healthcheck (optional)
+    healthcheck:
+      test: ["CMD", "rpcinfo", "-t", "127.0.0.1", "nfs", "4"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

@@ -1,45 +1,59 @@
-# openSUSE NFS Server Dockerfile
+# openSUSE NFS-Ganesha Server Dockerfile
 # Maintainer: KnightRider2070
-# Description: Lightweight and containerized NFS Server with runtime-configurable storage size.
+# Description: Lightweight containerized NFSv4 server using NFS-Ganesha (user-space NFS)
+# Based on contained-ganesha approach: https://github.com/NicolasT/contained-ganesha
 
 FROM opensuse/leap:15.5
 
 # Set non-interactive mode for package management
 ENV ZYPP_NO_TTY=1 \
     NFS_SIZE_MB=100 \
-    MONITOR_INTERVAL=1
-ENV USE_GANESHA=0
+    NFS_PORT=2049 \
+    MOUNTD_PORT=20048
 
-# Install required packages
+# Install required packages for NFS-Ganesha
 RUN zypper --non-interactive ref && \
-    # Install kernel NFS server + common utilities. Attempt to install nfs-ganesha as well
-    # if it's available in the repositories. The install will continue even if
-    # nfs-ganesha isn't present (builds on systems without the package will not fail).
+    # Install NFS-Ganesha and supporting services
     zypper --non-interactive install -y \
-    nfs-kernel-server rpcbind nfs-client e2fsprogs iproute2 || true && \
-    # Try installing nfs-ganesha; ignore errors if not available
-    zypper --non-interactive install -y nfs-ganesha || true && \
-    zypper clean --all
-
-# Create necessary directories and NFS share
-RUN mkdir -p /mnt/nfs-share /nfs-share && chmod 777 /nfs-share
-
-# Define NFS export rules
-RUN echo "/mnt/nfs-share *(rw,sync,no_root_squash,no_subtree_check,fsid=0)" > /etc/exports
+        nfs-ganesha \
+        nfs-ganesha-vfs \
+        rpcbind \
+        dbus-1 \
+        e2fsprogs \
+        iproute2 \
+        util-linux \
+        systemd-tmpfiles \
+        && \
+    zypper clean --all && \
+    # Create necessary directories
+    mkdir -p /mnt/nfs-share /run/ganesha /run/dbus /var/lib/nfs/ganesha && \
+    chmod 755 /mnt/nfs-share /run/ganesha && \
+    # Remove default ganesha config (we'll provide our own)
+    rm -f /etc/ganesha/ganesha.conf
 
 # Set up required NFS service ports
-EXPOSE 2049/tcp 2049/udp 20048/tcp 20048/udp
+EXPOSE ${NFS_PORT}/tcp ${NFS_PORT}/udp ${MOUNTD_PORT}/tcp ${MOUNTD_PORT}/udp 111/tcp 111/udp
 
-# Copy the entrypoint script and make it executable
+# Copy configuration and scripts
+COPY ./config/ganesha.conf /etc/ganesha/ganesha.conf
 COPY ./entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Copy a default Ganesha configuration. If the image doesn't have Ganesha package,
-# this file is harmless; if Ganesha is installed and enabled at runtime it will use this.
-COPY ./config/ganesha.conf /etc/ganesha/ganesha.conf
+# Define volumes for runtime data
+VOLUME ["/run", "/var/lib/nfs/ganesha"]
 
 # Use entrypoint script for service management
-CMD ["/entrypoint.sh"]
+ENTRYPOINT ["/entrypoint.sh"]
 
-#docker run --privileged --name nfs-server -p 2049:2049 -p 20048:20048 nfs-server
-#mount.nfs4 -v  172.17.0.2:/ /mnt/share
+# Usage examples:
+# Run without privileged mode (recommended):
+#   docker run -d --name nfs-server \
+#     --cap-drop ALL \
+#     --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add FSETID \
+#     --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
+#     -p 2049:2049 -p 20048:20048 -p 111:111 \
+#     -e NFS_SIZE_MB=500 \
+#     nfs-ganesha-server
+#
+# Mount from client (NFSv4):
+#   mount -t nfs4 -o vers=4.0 <server-ip>:/ /mnt/nfs
