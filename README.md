@@ -1,18 +1,10 @@
 # **📦 suse-nfs-server - Containerized NFSv4 Server with NFS-Ganesha**# **📦 suse-nfs-server - Lightweight, Containerized NFS Server**
 
-
-
 **suse-nfs-server** is a modern, containerized **NFSv4 server** built on **openSUSE Leap 15.5** using **NFS-Ganesha** (user-space NFS implementation). This project provides a **secure, lightweight, and flexible** NFS solution that runs **without privileged mode** and supports **dynamic storage configuration**.**suse-nfs-server** is a highly flexible, containerized **NFS server** built on **openSUSE Leap 15.5**, designed for **easy deployment**, and **dynamic storage configuration** without the need for Docker volumes.
-
-
 
 ------
 
-
-
 ## **✨ Features**## **✨ Features**
-
-
 
 ✅ **NFSv4 Only** – Modern NFS protocol without legacy complexity  **Supports NFSv3 & NFSv4** – Compatible with modern clients  
 
@@ -28,29 +20,30 @@
 
 ✅ **Container Best Practices** – Based on [contained-ganesha](https://github.com/NicolasT/contained-ganesha) approach## **🚀 Quick Start**
 
-
-
 ---Run the **NFS server container** with default settings (100MB storage):
 
 
 
-## **🚀 Quick Start**```sh
+## **🚀 Quick Start**
 
+```sh
 docker run -d --name nfs-server --privileged \
+```
 
-### **Run with Recommended Security (Non-Privileged Mode)**  -p 2049:2049 -p 20048:20048 \
+### **Run with Recommended Security (Non-Privileged Mode)**  
 
-  ghcr.io/knightrider2070/suse-nfs-server
+```-p 2049:2049 -p 20048:20048 ghcr.io/knightrider2070/suse-nfs-server```
 
-```bash```
-
+```bash
 docker run -d --name nfs-server \
+```
 
+```
   --cap-drop ALL \### **📌 Customizing NFS Storage Size (Example: 2GB)**
 
   --cap-add CHOWN \
 
-  --cap-add DAC_OVERRIDE \```sh
+  --cap-add DAC_OVERRIDE \
 
   --cap-add FOWNER \docker run -d --name nfs-server --privileged \
 
@@ -60,15 +53,16 @@ docker run -d --name nfs-server \
 
   --cap-add SETGID \  ghcr.io/knightrider2070/suse-nfs-server
 
-  --cap-add SETUID \```
+  --cap-add SETUID \
 
   -p 2049:2049 -p 20048:20048 -p 111:111 \
 
   -e NFS_SIZE_MB=500 \### **📌 Customizing log interval (Example: 5 seconds)**
 
   ghcr.io/knightrider2070/suse-nfs-server
+```
 
-``````sh
+```sh
 
 docker run -d --name nfs-server --privileged \
 
@@ -86,7 +80,8 @@ docker run -d --name nfs-server \```
 
   ghcr.io/knightrider2070/suse-nfs-server
 
-```---
+```
+---
 
 
 
@@ -95,7 +90,6 @@ docker run -d --name nfs-server \```
 
 
 ---| Variable      | Default | Description                                   |
-
 |---------------|---------|-----------------------------------------------|
 
 ## **🛠 Configuration & Environment Variables**| `NFS_SIZE_MB` | `100`   | Set NFS storage size dynamically (in MB)      |
