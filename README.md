@@ -50,11 +50,94 @@ docker run -d --name nfs-server \
 
 ## 🛠 Configuration & Environment Variables
 
-| Variable       | Default | Description                                          |
-|----------------|---------|------------------------------------------------------|
-| `NFS_SIZE_MB`  | `100`   | Set NFS storage size dynamically (in MB)             |
-| `NFS_PORT`     | `2049`  | NFS service port                                     |
-| `MOUNTD_PORT`  | `20048` | Mount daemon port                                    |
+| Variable          | Default       | Description                                          |
+|-------------------|---------------|------------------------------------------------------|
+| `NFS_SIZE_MB`     | `100`         | NFS storage size in MB (loopback mode only)          |
+| `NFS_PORT`        | `2049`        | NFS service port                                     |
+| `MOUNTD_PORT`     | `20048`       | Mount daemon port                                    |
+| `USE_VOLUME`      | `false`       | Use Docker volume instead of loopback file           |
+| `NFS_VOLUME_PATH` | `/nfs-volume` | Path where Docker volume is mounted                  |
+
+---
+
+## 💾 Storage Modes
+
+This container supports **two storage modes** for NFS data:
+
+### 1. Loopback File Mode (Default)
+
+Uses an internal loopback ext4 filesystem stored in `/nfs-disk.img`. This is the default mode and requires no additional configuration.
+
+**Characteristics:**
+- ✅ Simple setup - no volume configuration needed
+- ✅ Dynamic size - set with `NFS_SIZE_MB` environment variable
+- ⚠️ Non-persistent - data is lost when container is removed (unless you mount a volume at `/nfs-disk.img`)
+- 📦 Self-contained - all storage inside the container
+
+**Example:**
+```bash
+docker run -d --name nfs-server \
+  --cap-drop ALL \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --cap-add FSETID --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -e NFS_SIZE_MB=1024 \
+  ghcr.io/knightrider2070/suse-nfs-server
+```
+
+### 2. Docker Volume Mode (Persistent Storage)
+
+Uses a Docker volume or bind mount for NFS data. This provides true persistence across container restarts and removals.
+
+**Characteristics:**
+- ✅ Fully persistent - data survives container removal
+- ✅ Flexible - use named volumes or bind mounts
+- ✅ Better performance - no loopback overhead
+- 🔧 Requires volume setup
+
+**Example with Named Volume:**
+```bash
+# Create a named volume
+docker volume create nfs-data
+
+# Run the container with the volume
+docker run -d --name nfs-server \
+  --cap-drop ALL \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --cap-add FSETID --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -v nfs-data:/nfs-volume \
+  -e USE_VOLUME=true \
+  ghcr.io/knightrider2070/suse-nfs-server
+```
+
+**Example with Bind Mount:**
+```bash
+# Create a directory on the host
+mkdir -p /path/to/nfs-data
+
+# Run the container with a bind mount
+docker run -d --name nfs-server \
+  --cap-drop ALL \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --cap-add FSETID --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -v /path/to/nfs-data:/nfs-volume \
+  -e USE_VOLUME=true \
+  ghcr.io/knightrider2070/suse-nfs-server
+```
+
+### Comparison
+
+| Feature            | Loopback Mode          | Volume Mode                |
+|--------------------|------------------------|----------------------------|
+| Setup              | Simple (default)       | Requires volume creation   |
+| Persistence        | ❌ Non-persistent*     | ✅ Persistent             |
+| Performance        | Good                   | Better (no loopback)       |
+| Size Configuration | `NFS_SIZE_MB`          | Volume/filesystem size     |
+| Use Case           | Testing, temporary     | Production, long-term      |
+
+*Data is lost when container is removed unless `/nfs-disk.img` is mounted as a volume
 
 ---
 
@@ -211,6 +294,7 @@ docker run -d --name nfs-server \
 
 ### Docker Compose Example
 
+**Loopback Mode (Default):**
 ```yaml
 version: '3.8'
 
@@ -235,6 +319,38 @@ services:
     environment:
       - NFS_SIZE_MB=2048
     restart: unless-stopped
+```
+
+**Volume Mode (Persistent Storage):**
+```yaml
+version: '3.8'
+
+services:
+  nfs-server:
+    image: ghcr.io/knightrider2070/suse-nfs-server
+    container_name: nfs-ganesha-server
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    ports:
+      - "2049:2049"    # NFS
+      - "20048:20048"  # MountD
+      - "111:111"      # RPCBind
+    environment:
+      - USE_VOLUME=true
+    volumes:
+      - nfs-data:/nfs-volume
+    restart: unless-stopped
+
+volumes:
+  nfs-data:
 ```
 
 ---

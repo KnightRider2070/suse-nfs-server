@@ -14,29 +14,62 @@ log() {
 log "🚀 Starting NFS-Ganesha Server..."
 log "System Info: $(uname -a)"
 
-# Get the runtime-configurable NFS storage size (default: 100MB)
+# Determine storage mode: Docker volume or loopback file
+USE_VOLUME=${USE_VOLUME:-false}
+NFS_VOLUME_PATH=${NFS_VOLUME_PATH:-/nfs-volume}
 NFS_SIZE_MB=${NFS_SIZE_MB:-100}
-log "📦 Configuring NFS share with size: ${NFS_SIZE_MB}MB"
 
-# Create or resize the NFS disk image
-if [ ! -f /nfs-disk.img ]; then
-    log "📝 Creating a new NFS disk image of size ${NFS_SIZE_MB}MB..."
-    truncate -s ${NFS_SIZE_MB}M /nfs-disk.img
-    mkfs.ext4 -q /nfs-disk.img
-else
-    log "📝 Existing NFS disk image found. Resizing to ${NFS_SIZE_MB}MB..."
-    truncate -s ${NFS_SIZE_MB}M /nfs-disk.img
-    e2fsck -f -y /nfs-disk.img || true
-    resize2fs /nfs-disk.img
+mkdir -p /mnt/nfs-share
+
+if [ "$USE_VOLUME" = "true" ]; then
+    # Docker Volume Mode
+    log "📦 Using Docker volume mode"
+    
+    # Check if volume is mounted
+    if mountpoint -q "$NFS_VOLUME_PATH"; then
+        log "✅ Docker volume detected at $NFS_VOLUME_PATH"
+        
+        # Bind mount the volume to /mnt/nfs-share
+        if [ "$NFS_VOLUME_PATH" != "/mnt/nfs-share" ]; then
+            log "💾 Bind mounting $NFS_VOLUME_PATH to /mnt/nfs-share..."
+            mount --bind "$NFS_VOLUME_PATH" /mnt/nfs-share || {
+                log "❌ Failed to bind mount $NFS_VOLUME_PATH"
+                exit 1
+            }
+        fi
+        
+        log "✅ Using Docker volume for NFS storage (persistent)"
+    else
+        log "⚠️  No volume mounted at $NFS_VOLUME_PATH, falling back to loopback mode"
+        USE_VOLUME=false
+    fi
 fi
 
-log "💾 Mounting ext4 filesystem for NFS..."
-mkdir -p /mnt/nfs-share
-mount -o loop /nfs-disk.img /mnt/nfs-share || {
-    log "❌ Failed to mount /nfs-disk.img"
-    exit 1
-}
+if [ "$USE_VOLUME" != "true" ]; then
+    # Loopback File Mode (default)
+    log "📦 Using loopback file mode with size: ${NFS_SIZE_MB}MB"
+    
+    # Create or resize the NFS disk image
+    if [ ! -f /nfs-disk.img ]; then
+        log "📝 Creating a new NFS disk image of size ${NFS_SIZE_MB}MB..."
+        truncate -s "${NFS_SIZE_MB}M" /nfs-disk.img
+        mkfs.ext4 -q /nfs-disk.img
+    else
+        log "📝 Existing NFS disk image found. Resizing to ${NFS_SIZE_MB}MB..."
+        truncate -s "${NFS_SIZE_MB}M" /nfs-disk.img
+        e2fsck -f -y /nfs-disk.img || true
+        resize2fs /nfs-disk.img
+    fi
+
+    log "💾 Mounting ext4 filesystem for NFS..."
+    mount -o loop /nfs-disk.img /mnt/nfs-share || {
+        log "❌ Failed to mount /nfs-disk.img"
+        exit 1
+    }
+fi
+
 chmod 777 /mnt/nfs-share
+log "✅ NFS share ready at /mnt/nfs-share"
 
 # Setup tmpfiles for rpcbind
 log "🔧 Setting up rpcbind runtime directories..."
@@ -114,10 +147,20 @@ log "📡 NFS Port: ${NFS_PORT:-2049}, MountD Port: ${MOUNTD_PORT:-20048}"
 # Function to cleanup on exit
 cleanup() {
     log "🛑 Shutting down NFS-Ganesha server..."
-    kill $GANESHA_PID 2>/dev/null || true
-    kill $DBUS_PID 2>/dev/null || true
-    kill $RPCBIND_PID 2>/dev/null || true
-    umount /mnt/nfs-share 2>/dev/null || true
+    kill "$GANESHA_PID" 2>/dev/null || true
+    kill "$DBUS_PID" 2>/dev/null || true
+    kill "$RPCBIND_PID" 2>/dev/null || true
+    
+    # Only unmount if not using Docker volume mode
+    if [ "$USE_VOLUME" != "true" ]; then
+        umount /mnt/nfs-share 2>/dev/null || true
+    else
+        # Unmount bind mount if different path
+        if [ "$NFS_VOLUME_PATH" != "/mnt/nfs-share" ]; then
+            umount /mnt/nfs-share 2>/dev/null || true
+        fi
+    fi
+    
     log "👋 Shutdown complete"
     exit 0
 }
@@ -126,42 +169,3 @@ trap cleanup SIGTERM SIGINT
 
 # Start ganesha in foreground mode
 exec ganesha.nfsd -F -L /dev/stderr -f /etc/ganesha/ganesha.conf -p /run/ganesha/ganesha.pid
-            awk 'NR>1 {print $4}' |
-            sed 's/\r$//' |
-            grep -v '^[[:space:]]*$' ||
-            true
-    )
-
-    # Build CURRENT_CONNECTIONS_MAP from CURRENT_CONNECTIONS
-    unset CURRENT_CONNECTIONS_MAP
-    declare -A CURRENT_CONNECTIONS_MAP
-    for conn in "${CURRENT_CONNECTIONS[@]}"; do
-        [[ -n "$conn" ]] && CURRENT_CONNECTIONS_MAP["$conn"]=1
-    done
-
-    # Detect new connections
-    new_count=0
-    for conn in "${CURRENT_CONNECTIONS[@]}"; do
-        if [[ -z "${PREV_CONNECTIONS[$conn]}" ]]; then
-            log "➕ New NFS connection: $conn"
-            ((new_count++))
-        fi
-    done
-
-    # Detect disconnections
-    disc_count=0
-    for conn in "${!PREV_CONNECTIONS[@]}"; do
-        if [[ -z "${CURRENT_CONNECTIONS_MAP[$conn]}" ]]; then
-            log "➖ NFS client disconnected: $conn"
-            unset "PREV_CONNECTIONS[$conn]"
-            ((disc_count++))
-        fi
-    done
-
-    # Update PREV_CONNECTIONS
-    for conn in "${CURRENT_CONNECTIONS[@]}"; do
-        PREV_CONNECTIONS["$conn"]=1
-    done
-
-    sleep "$MONITOR_INTERVAL"
-done
