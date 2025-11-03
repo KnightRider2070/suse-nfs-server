@@ -28,15 +28,20 @@ services:
 
     # Environment variables
     environment:
-      - NFS_SIZE_MB=2048 # 2GB NFS storage
+      - NFS_SIZE_MB=2048 # 2GB NFS storage (only used in loopback mode)
       - NFS_PORT=2049
       - MOUNTD_PORT=20048
+      # Uncomment to use Docker volume instead of loopback file
+      # - USE_VOLUME=true
+      # - NFS_VOLUME_PATH=/nfs-volume
 
     # Volumes for persistent data (optional)
-    # Uncomment the volumes section below to customize
+    # Uncomment to use Docker volume for persistent NFS storage
     # volumes:
-    #   - ./config/ganesha.conf:/etc/ganesha/ganesha.conf:ro
-    #   - ./data:/data
+    #   - nfs-data:/nfs-volume
+    # Or use a bind mount:
+    # volumes:
+    #   - ./nfs-data:/nfs-volume
 
     # Restart policy
     restart: unless-stopped
@@ -48,3 +53,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+# Named volumes (uncomment if using volume mode)
+# volumes:
+#   nfs-data:
