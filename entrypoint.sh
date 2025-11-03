@@ -1,103 +1,131 @@
 #!/bin/bash
+# NFS-Ganesha Entrypoint Script
+# Starts all required services for NFS-Ganesha in a single container
 
-LOG_FILE="/var/log/nfs-server.log"
-touch "$LOG_FILE"
+set -e
+
+LOG_FILE="/dev/stdout"
 
 # Logging function with timestamps
 log() {
-    echo "[$(date "+%Y-%m-%d %H:%M:%S")] 🔧 $1" | tee -a "$LOG_FILE"
+    echo "[$(date "+%Y-%m-%d %H:%M:%S")] $1" | tee -a "$LOG_FILE"
 }
 
-log "Starting NFS Server..."
+log "🚀 Starting NFS-Ganesha Server..."
 log "System Info: $(uname -a)"
-
-# Determine whether to use Ganesha (user-space NFS) or kernel NFS server
-USE_GANESHA=${USE_GANESHA:-0}
-if [[ "$USE_GANESHA" =~ ^(1|yes|true|on)$ ]]; then
-    log "USE_GANESHA is enabled — starting NFS Ganesha instead of kernel NFSd"
-else
-    log "Using kernel NFS server (default behavior)"
-fi
 
 # Get the runtime-configurable NFS storage size (default: 100MB)
 NFS_SIZE_MB=${NFS_SIZE_MB:-100}
-log "Configuring NFS share with size: ${NFS_SIZE_MB}MB"
+log "📦 Configuring NFS share with size: ${NFS_SIZE_MB}MB"
 
 # Create or resize the NFS disk image
 if [ ! -f /nfs-disk.img ]; then
-    log "Creating a new NFS disk image of size ${NFS_SIZE_MB}MB..."
+    log "📝 Creating a new NFS disk image of size ${NFS_SIZE_MB}MB..."
     truncate -s ${NFS_SIZE_MB}M /nfs-disk.img
-    mkfs.ext4 /nfs-disk.img
+    mkfs.ext4 -q /nfs-disk.img
 else
-    log "Existing NFS disk image found. Resizing to ${NFS_SIZE_MB}MB..."
+    log "📝 Existing NFS disk image found. Resizing to ${NFS_SIZE_MB}MB..."
     truncate -s ${NFS_SIZE_MB}M /nfs-disk.img
-    e2fsck -f /nfs-disk.img
+    e2fsck -f -y /nfs-disk.img || true
     resize2fs /nfs-disk.img
 fi
 
-log "Mounting ext4 filesystem for NFS..."
+log "💾 Mounting ext4 filesystem for NFS..."
 mkdir -p /mnt/nfs-share
 mount -o loop /nfs-disk.img /mnt/nfs-share || {
     log "❌ Failed to mount /nfs-disk.img"
     exit 1
 }
+chmod 777 /mnt/nfs-share
 
-if [[ "$USE_GANESHA" =~ ^(1|yes|true|on)$ ]]; then
-    # NFS Ganesha (user-space) is typically NFSv4-only and does not interact with
-    # kernel-space nfsd, rpc.mountd or rpcbind the same way kernel NFS does. Skip
-    # starting kernel NFS subsystems and start ganesha directly.
-    log "USE_GANESHA enabled — starting NFS Ganesha (NFSv4). Skipping kernel nfsd/rpc.mountd/rpcbind."
+# Setup tmpfiles for rpcbind
+log "🔧 Setting up rpcbind runtime directories..."
+mkdir -p /run/rpcbind /var/lib/rpcbind
+chmod 755 /run/rpcbind
 
-    # Ensure Ganesh config exists at expected location; if not, warn
-    if [ ! -f /etc/ganesha/ganesha.conf ]; then
-        log "⚠️  Ganesha config not found at /etc/ganesha/ganesha.conf — using embedded defaults may fail"
-    else
-        log "Using Ganesha config: /etc/ganesha/ganesha.conf"
+# Start rpcbind
+log "🔌 Starting rpcbind..."
+rpcbind -w -f &
+RPCBIND_PID=$!
+sleep 2
+
+# Wait for rpcbind to be ready
+TIMEOUT=10
+RPCBIND_UP=0
+for i in $(seq 1 $TIMEOUT); do
+    log "⏳ Waiting for rpcbind to be up ($i/$TIMEOUT)..."
+    if rpcinfo -T tcp 127.0.0.1 100000 4 >/dev/null 2>&1; then
+        log "✅ rpcbind is ready"
+        RPCBIND_UP=1
+        break
     fi
+    sleep 1
+done
 
-    log "Starting NFS Ganesha (ganesha.nfsd) in background..."
-    if command -v ganesha.nfsd >/dev/null 2>&1; then
-        # Start ganesha in foreground-style background so container stays alive
-        ganesha.nfsd -L /var/log/ganesha.log &>>"$LOG_FILE" &
-        sleep 2
-        log "Ganesha started (pid: $!)"
-    else
-        log "❌ ganesha.nfsd binary not found. Is nfs-ganesha installed?"
-    fi
-else
-    # Ensure the NFS kernel module is available
-    mkdir -p /proc/fs/nfsd
-    mount -t nfsd nfsd /proc/fs/nfsd
-
-    log "Starting rpcbind..."
-    rpcbind -w -d &>>"$LOG_FILE"
-    sleep 2
-
-    log "Starting rpc.statd..."
-    rpc.statd --no-notify -F &>>"$LOG_FILE" &
-    sleep 2
-
-    log "Exporting NFS shares..."
-    exportfs -rv | tee -a "$LOG_FILE"
-
-    log "Starting rpc.nfsd ..."
-    rpc.nfsd -N 2 &>>"$LOG_FILE"
-    sleep 2
-
-    log "Starting rpc.mountd..."
-    rpc.mountd -N 2 -V 4 -p 20048 &>>"$LOG_FILE" &
+if [ $RPCBIND_UP -ne 1 ]; then
+    log "❌ Timeout while waiting for rpcbind to be up"
+    exit 1
 fi
 
-MONITOR_INTERVAL=${MONITOR_INTERVAL:-1}
-log "Monitoring NFS client connections every ${MONITOR_INTERVAL} seconds..."
+# Setup and start dbus-daemon
+log "🔧 Setting up dbus-daemon..."
+mkdir -p /run/dbus /var/lib/dbus
+if [ ! -f /var/lib/dbus/machine-id ]; then
+    dbus-uuidgen --ensure=/var/lib/dbus/machine-id
+fi
 
-declare -A PREV_CONNECTIONS
+log "🔌 Starting dbus-daemon..."
+dbus-daemon --system --nofork --nopidfile &
+DBUS_PID=$!
+sleep 2
 
-while true; do
+# Wait for dbus to be ready
+DBUS_UP=0
+for i in $(seq 1 $TIMEOUT); do
+    log "⏳ Waiting for dbus-daemon to be up ($i/$TIMEOUT)..."
+    if [ -S /run/dbus/system_bus_socket ]; then
+        log "✅ dbus-daemon is ready"
+        DBUS_UP=1
+        break
+    fi
+    sleep 1
+done
 
-    # Grab active connections (peer/client side is column $5)
-    mapfile -t CURRENT_CONNECTIONS < <(
-        ss -tn state established '( sport = :2049 )' |
+if [ $DBUS_UP -ne 1 ]; then
+    log "❌ Timeout while waiting for dbus-daemon to be up"
+    exit 1
+fi
+
+# Validate Ganesha configuration
+if [ ! -f /etc/ganesha/ganesha.conf ]; then
+    log "❌ Ganesha config not found at /etc/ganesha/ganesha.conf"
+    exit 1
+fi
+log "✅ Using Ganesha config: /etc/ganesha/ganesha.conf"
+
+# Setup Ganesha runtime directory
+mkdir -p /run/ganesha /var/lib/nfs/ganesha
+chmod 755 /run/ganesha /var/lib/nfs/ganesha
+
+# Start NFS-Ganesha in foreground
+log "🚀 Starting NFS-Ganesha (NFSv4 user-space server)..."
+log "📡 NFS Port: ${NFS_PORT:-2049}, MountD Port: ${MOUNTD_PORT:-20048}"
+
+# Function to cleanup on exit
+cleanup() {
+    log "🛑 Shutting down NFS-Ganesha server..."
+    kill $GANESHA_PID 2>/dev/null || true
+    kill $DBUS_PID 2>/dev/null || true
+    kill $RPCBIND_PID 2>/dev/null || true
+    umount /mnt/nfs-share 2>/dev/null || true
+    log "👋 Shutdown complete"
+    exit 0
+}
+
+trap cleanup SIGTERM SIGINT
+
+# Start ganesha in foreground mode
+exec ganesha.nfsd -F -L /dev/stderr -f /etc/ganesha/ganesha.conf -p /run/ganesha/ganesha.pid
             awk 'NR>1 {print $4}' |
             sed 's/\r$//' |
             grep -v '^[[:space:]]*$' ||
