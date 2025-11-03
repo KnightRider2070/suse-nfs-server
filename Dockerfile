@@ -22,7 +22,7 @@ RUN zypper --non-interactive ref && \
         e2fsprogs \
         iproute2 \
         util-linux \
-        systemd-tmpfiles \
+        systemd \
         && \
     zypper clean --all && \
     # Create necessary directories
