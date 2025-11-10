@@ -9,9 +9,7 @@ FROM opensuse/leap:15.5
 ENV ZYPP_NO_TTY=1 \
     NFS_SIZE_MB=100 \
     NFS_PORT=2049 \
-    MOUNTD_PORT=20048 \
-    USE_VOLUME=false \
-    NFS_VOLUME_PATH=/nfs-volume
+    MOUNTD_PORT=20048
 
 # Install required packages for NFS-Ganesha
 RUN zypper --non-interactive ref && \
@@ -41,31 +39,20 @@ COPY ./config/ganesha.conf /etc/ganesha/ganesha.conf
 COPY ./entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Define volumes for runtime data and optional persistent NFS storage
-VOLUME ["/run", "/var/lib/nfs/ganesha", "/nfs-volume"]
+# Define volumes for runtime data
+VOLUME ["/run", "/var/lib/nfs/ganesha"]
 
 # Use entrypoint script for service management
 ENTRYPOINT ["/entrypoint.sh"]
 
 # Usage examples:
-# Run with loopback file (default):
+# Run without privileged mode (recommended):
 #   docker run -d --name nfs-server \
 #     --cap-drop ALL \
-#     --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add FSETID \
-#     --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
+#     --cap-add SYS_ADMIN --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+#     --cap-add FSETID --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
 #     -p 2049:2049 -p 20048:20048 -p 111:111 \
 #     -e NFS_SIZE_MB=500 \
-#     nfs-ganesha-server
-#
-# Run with Docker volume (persistent storage):
-#   docker volume create nfs-data
-#   docker run -d --name nfs-server \
-#     --cap-drop ALL \
-#     --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add FSETID \
-#     --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
-#     -p 2049:2049 -p 20048:20048 -p 111:111 \
-#     -v nfs-data:/nfs-volume \
-#     -e USE_VOLUME=true \
 #     nfs-ganesha-server
 #
 # Mount from client (NFSv4):
