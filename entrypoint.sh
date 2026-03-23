@@ -1,341 +1,217 @@
 #!/bin/bash
-
-set -e
-
-LOG_FILE="/dev/stdout"
-
-# Logging function with timestamps
-log() {
-    echo "[$(date "+%Y-%m-%d %H:%M:%S")] $1" | tee -a "$LOG_FILE"
-}
-
-log "🚀 Starting NFS-Ganesha Server..."
-log "System Info: $(uname -a)"
-
-# Determine storage mode: Docker volume or loopback file
-USE_VOLUME=${USE_VOLUME:-false}
-NFS_VOLUME_PATH=${NFS_VOLUME_PATH:-/nfs-volume}
-NFS_SIZE_MB=${NFS_SIZE_MB:-100}
-
-mkdir -p /mnt/nfs-share
-
-if [ "$USE_VOLUME" = "true" ]; then
-    # Docker Volume Mode
-    log "📦 Using Docker volume mode"
-    
-    # Check if volume is mounted
-    if mountpoint -q "$NFS_VOLUME_PATH"; then
-        log "✅ Docker volume detected at $NFS_VOLUME_PATH"
-        
-        # Bind mount the volume to /mnt/nfs-share
-        if [ "$NFS_VOLUME_PATH" != "/mnt/nfs-share" ]; then
-            log "💾 Bind mounting $NFS_VOLUME_PATH to /mnt/nfs-share..."
-            mount --bind "$NFS_VOLUME_PATH" /mnt/nfs-share || {
-                log "❌ Failed to bind mount $NFS_VOLUME_PATH"
-                exit 1
-            }
-        fi
-        
-        log "✅ Using Docker volume for NFS storage (persistent)"
-    else
-        log "⚠️  No volume mounted at $NFS_VOLUME_PATH, falling back to loopback mode"
-        USE_VOLUME=false
-    fi
-fi
-
-if [ "$USE_VOLUME" != "true" ]; then
-    # Loopback File Mode (default)
-    log "📦 Using loopback file mode with size: ${NFS_SIZE_MB}MB"
-    
-    # Create or resize the NFS disk image
-    if [ ! -f /nfs-disk.img ]; then
-        log "📝 Creating a new NFS disk image of size ${NFS_SIZE_MB}MB..."
-        truncate -s "${NFS_SIZE_MB}M" /nfs-disk.img
-        mkfs.ext4 -q /nfs-disk.img
-    else
-        log "📝 Existing NFS disk image found. Resizing to ${NFS_SIZE_MB}MB..."
-        truncate -s "${NFS_SIZE_MB}M" /nfs-disk.img
-        e2fsck -f -y /nfs-disk.img || true
-        resize2fs /nfs-disk.img
-    fi
-
-    log "💾 Mounting ext4 filesystem for NFS..."
-    mount -o loop /nfs-disk.img /mnt/nfs-share || {
-        log "❌ Failed to mount /nfs-disk.img"
-        exit 1
-    }
-fi
-
-chmod 777 /mnt/nfs-share
-log "✅ NFS share ready at /mnt/nfs-share"
-
-# Setup tmpfiles for rpcbind
-log "🔧 Setting up rpcbind runtime directories..."
-mkdir -p /run/rpcbind /var/lib/rpcbind
-chmod 755 /run/rpcbind
-
-# Start rpcbind
-log "🔌 Starting rpcbind..."
-rpcbind -w -f &
-RPCBIND_PID=$!
-sleep 2
-
-# Wait for rpcbind to be ready
-TIMEOUT=10
-RPCBIND_UP=0
-for i in $(seq 1 $TIMEOUT); do
-    log "⏳ Waiting for rpcbind to be up ($i/$TIMEOUT)..."
-    if rpcinfo -T tcp 127.0.0.1 100000 4 >/dev/null 2>&1; then
-        log "✅ rpcbind is ready"
-        RPCBIND_UP=1
-        break
-    fi
-    sleep 1
-done
-
-if [ $RPCBIND_UP -ne 1 ]; then
-    log "❌ Timeout while waiting for rpcbind to be up"
-    exit 1
-fi
-
-# Setup and start dbus-daemon
-log "🔧 Setting up dbus-daemon..."
-mkdir -p /run/dbus /var/lib/dbus
-if [ ! -f /var/lib/dbus/machine-id ]; then
-    dbus-uuidgen --ensure=/var/lib/dbus/machine-id
-fi
-
-log "🔌 Starting dbus-daemon..."
-dbus-daemon --system --nofork --nopidfile &
-DBUS_PID=$!
-sleep 2
-
-# Wait for dbus to be ready
-DBUS_UP=0
-for i in $(seq 1 $TIMEOUT); do
-    log "⏳ Waiting for dbus-daemon to be up ($i/$TIMEOUT)..."
-    if [ -S /run/dbus/system_bus_socket ]; then
-        log "✅ dbus-daemon is ready"
-        DBUS_UP=1
-        break
-    fi
-    sleep 1
-done
-
-if [ $DBUS_UP -ne 1 ]; then
-    log "❌ Timeout while waiting for dbus-daemon to be up"
-    exit 1
-fi
-
-# Validate Ganesha configuration
-if [ ! -f /etc/ganesha/ganesha.conf ]; then
-    log "❌ Ganesha config not found at /etc/ganesha/ganesha.conf"
-    exit 1
-fi
-log "✅ Using Ganesha config: /etc/ganesha/ganesha.conf"
-
-# Setup Ganesha runtime directory
-mkdir -p /run/ganesha /var/lib/nfs/ganesha
-chmod 755 /run/ganesha /var/lib/nfs/ganesha
-
-# Start NFS-Ganesha in foreground
-log "🚀 Starting NFS-Ganesha (NFSv4 user-space server)..."
-log "📡 NFS Port: ${NFS_PORT:-2049}, MountD Port: ${MOUNTD_PORT:-20048}"
-
-# Function to cleanup on exit
-cleanup() {
-    log "🛑 Shutting down NFS-Ganesha server..."
-    kill "$GANESHA_PID" 2>/dev/null || true
-    kill "$DBUS_PID" 2>/dev/null || true
-    kill "$RPCBIND_PID" 2>/dev/null || true
-    
-    # Only unmount if not using Docker volume mode
-    if [ "$USE_VOLUME" != "true" ]; then
-        umount /mnt/nfs-share 2>/dev/null || true
-    else
-        # Unmount bind mount if different path
-        if [ "$NFS_VOLUME_PATH" != "/mnt/nfs-share" ]; then
-            umount /mnt/nfs-share 2>/dev/null || true
-        fi
-    fi
-    
-    log "👋 Shutdown complete"
-    exit 0
-}
-
-trap cleanup SIGTERM SIGINT
-
-# Start ganesha in foreground mode
-exec ganesha.nfsd -F -L /dev/stderr -f /etc/ganesha/ganesha.conf -p /run/ganesha/ganesha.pid
-
-#!/bin/bash
-# NFS-Ganesha Entrypoint Script
-# Starts all required services for NFS-Ganesha in a single container
-
-set -e
+# =============================================================================
+# ganesha-entrypoint.sh
+# Entrypoint for a containerised NFS-Ganesha NFSv4 server.
+#
+# Storage modes:
+#   USE_VOLUME=true   -> bind-mounts a Docker volume at NFS_VOLUME_PATH
+#   USE_VOLUME=false  -> creates a loopback ext4 image (default, ephemeral)
+#
+# Environment variables:
+#   USE_VOLUME       true | false  (default: false)
+#   NFS_VOLUME_PATH  path to the Docker volume  (default: /nfs-volume)
+#   NFS_SIZE_MB      loopback image size in MB   (default: 100)
+#   NFS_PORT         NFS listening port           (default: 2049)
+#   MOUNTD_PORT      MountD port                  (default: 20048)
+# =============================================================================
+set -euo pipefail
 
 LOG_FILE="/dev/stdout"
 
-# Logging function with timestamps
+### ───────────────────────────── Logging ──────────────────────────────────────
+
 log() {
-    echo "[$(date "+%Y-%m-%d %H:%M:%S")] $1" | tee -a "$LOG_FILE"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
-log "🚀 Starting NFS-Ganesha Server..."
-log "System Info: $(uname -a)"
+### ──────────────────────── Service wait helper ──────────────────────────────
 
-# Determine storage mode: Docker volume or loopback file
-USE_VOLUME=${USE_VOLUME:-false}
-NFS_VOLUME_PATH=${NFS_VOLUME_PATH:-/nfs-volume}
-NFS_SIZE_MB=${NFS_SIZE_MB:-100}
+# Usage: wait_for <label> <check_command> [timeout_seconds]
+wait_for() {
+  local label="$1" timeout="${3:-10}"
+  shift
+  local check_cmd="$1"
 
-mkdir -p /mnt/nfs-share
-
-if [ "$USE_VOLUME" = "true" ]; then
-    # Docker Volume Mode
-    log "📦 Using Docker volume mode"
-    
-    # Check if volume is mounted
-    if mountpoint -q "$NFS_VOLUME_PATH"; then
-        log "✅ Docker volume detected at $NFS_VOLUME_PATH"
-        
-        # Bind mount the volume to /mnt/nfs-share
-        if [ "$NFS_VOLUME_PATH" != "/mnt/nfs-share" ]; then
-            log "💾 Bind mounting $NFS_VOLUME_PATH to /mnt/nfs-share..."
-            mount --bind "$NFS_VOLUME_PATH" /mnt/nfs-share || {
-                log "❌ Failed to bind mount $NFS_VOLUME_PATH"
-                exit 1
-            }
-        fi
-        
-        log "✅ Using Docker volume for NFS storage (persistent)"
-    else
-        log "⚠️  No volume mounted at $NFS_VOLUME_PATH, falling back to loopback mode"
-        USE_VOLUME=false
-    fi
-fi
-
-if [ "$USE_VOLUME" != "true" ]; then
-    # Loopback File Mode (default)
-    log "📦 Using loopback file mode with size: ${NFS_SIZE_MB}MB"
-    
-    # Create or resize the NFS disk image
-    if [ ! -f /nfs-disk.img ]; then
-        log "📝 Creating a new NFS disk image of size ${NFS_SIZE_MB}MB..."
-        truncate -s "${NFS_SIZE_MB}M" /nfs-disk.img
-        mkfs.ext4 -q /nfs-disk.img
-    else
-        log "📝 Existing NFS disk image found. Resizing to ${NFS_SIZE_MB}MB..."
-        truncate -s "${NFS_SIZE_MB}M" /nfs-disk.img
-        e2fsck -f -y /nfs-disk.img || true
-        resize2fs /nfs-disk.img
-    fi
-
-    log "💾 Mounting ext4 filesystem for NFS..."
-    mount -o loop /nfs-disk.img /mnt/nfs-share || {
-        log "❌ Failed to mount /nfs-disk.img"
-        exit 1
-    }
-fi
-
-chmod 777 /mnt/nfs-share
-log "✅ NFS share ready at /mnt/nfs-share"
-
-# Setup tmpfiles for rpcbind
-log "🔧 Setting up rpcbind runtime directories..."
-mkdir -p /run/rpcbind /var/lib/rpcbind
-chmod 755 /run/rpcbind
-
-# Start rpcbind
-log "🔌 Starting rpcbind..."
-rpcbind -w -f &
-RPCBIND_PID=$!
-sleep 2
-
-# Wait for rpcbind to be ready
-TIMEOUT=10
-RPCBIND_UP=0
-for i in $(seq 1 $TIMEOUT); do
-    log "⏳ Waiting for rpcbind to be up ($i/$TIMEOUT)..."
-    if rpcinfo -T tcp 127.0.0.1 100000 4 >/dev/null 2>&1; then
-        log "✅ rpcbind is ready"
-        RPCBIND_UP=1
-        break
+  local i
+  for (( i=1; i<=timeout; i++ )); do
+    log "Waiting for ${label} ($i/${timeout})..."
+    if eval "$check_cmd" >/dev/null 2>&1; then
+      log "${label} is ready"
+      return 0
     fi
     sleep 1
-done
+  done
 
-if [ $RPCBIND_UP -ne 1 ]; then
-    log "❌ Timeout while waiting for rpcbind to be up"
-    exit 1
-fi
+  log "ERROR: Timeout waiting for ${label} after ${timeout}s"
+  return 1
+}
 
-# Setup and start dbus-daemon
-log "🔧 Setting up dbus-daemon..."
-mkdir -p /run/dbus /var/lib/dbus
-if [ ! -f /var/lib/dbus/machine-id ]; then
-    dbus-uuidgen --ensure=/var/lib/dbus/machine-id
-fi
+### ──────────────────────────── Variables ─────────────────────────────────────
 
-log "🔌 Starting dbus-daemon..."
-dbus-daemon --system --nofork --nopidfile &
-DBUS_PID=$!
-sleep 2
+USE_VOLUME="${USE_VOLUME:-false}"
+NFS_VOLUME_PATH="${NFS_VOLUME_PATH:-/nfs-volume}"
+NFS_SIZE_MB="${NFS_SIZE_MB:-100}"
+NFS_PORT="${NFS_PORT:-2049}"
+MOUNTD_PORT="${MOUNTD_PORT:-20048}"
+SHARE_PATH="/mnt/nfs-share"
 
-# Wait for dbus to be ready
-DBUS_UP=0
-for i in $(seq 1 $TIMEOUT); do
-    log "⏳ Waiting for dbus-daemon to be up ($i/$TIMEOUT)..."
-    if [ -S /run/dbus/system_bus_socket ]; then
-        log "✅ dbus-daemon is ready"
-        DBUS_UP=1
-        break
-    fi
-    sleep 1
-done
+RPCBIND_PID=""
+DBUS_PID=""
+GANESHA_PID=""
 
-if [ $DBUS_UP -ne 1 ]; then
-    log "❌ Timeout while waiting for dbus-daemon to be up"
-    exit 1
-fi
+### ────────────────────────── Cleanup / trap ──────────────────────────────────
 
-# Validate Ganesha configuration
-if [ ! -f /etc/ganesha/ganesha.conf ]; then
-    log "❌ Ganesha config not found at /etc/ganesha/ganesha.conf"
-    exit 1
-fi
-log "✅ Using Ganesha config: /etc/ganesha/ganesha.conf"
-
-# Setup Ganesha runtime directory
-mkdir -p /run/ganesha /var/lib/nfs/ganesha
-chmod 755 /run/ganesha /var/lib/nfs/ganesha
-
-# Start NFS-Ganesha in foreground
-log "🚀 Starting NFS-Ganesha (NFSv4 user-space server)..."
-log "📡 NFS Port: ${NFS_PORT:-2049}, MountD Port: ${MOUNTD_PORT:-20048}"
-
-# Function to cleanup on exit
 cleanup() {
-    log "🛑 Shutting down NFS-Ganesha server..."
-    kill "$GANESHA_PID" 2>/dev/null || true
-    kill "$DBUS_PID" 2>/dev/null || true
-    kill "$RPCBIND_PID" 2>/dev/null || true
-    
-    # Only unmount if not using Docker volume mode
-    if [ "$USE_VOLUME" != "true" ]; then
-        umount /mnt/nfs-share 2>/dev/null || true
-    else
-        # Unmount bind mount if different path
-        if [ "$NFS_VOLUME_PATH" != "/mnt/nfs-share" ]; then
-            umount /mnt/nfs-share 2>/dev/null || true
-        fi
-    fi
-    
-    log "👋 Shutdown complete"
-    exit 0
+  log "Shutting down NFS-Ganesha server..."
+
+  # Stop services in reverse order
+  [[ -n "$GANESHA_PID" ]] && { kill "$GANESHA_PID" 2>/dev/null; wait "$GANESHA_PID" 2>/dev/null || true; }
+  [[ -n "$DBUS_PID" ]]    && { kill "$DBUS_PID"    2>/dev/null; wait "$DBUS_PID"    2>/dev/null || true; }
+  [[ -n "$RPCBIND_PID" ]] && { kill "$RPCBIND_PID" 2>/dev/null; wait "$RPCBIND_PID" 2>/dev/null || true; }
+
+  # Unmount
+  if [[ "$USE_VOLUME" == "true" ]]; then
+    [[ "$NFS_VOLUME_PATH" != "$SHARE_PATH" ]] && umount "$SHARE_PATH" 2>/dev/null || true
+  else
+    umount "$SHARE_PATH" 2>/dev/null || true
+  fi
+
+  log "Shutdown complete"
+  exit 0
 }
 
-trap cleanup SIGTERM SIGINT
+trap cleanup SIGTERM SIGINT EXIT
 
-# Start ganesha in foreground mode
-exec ganesha.nfsd -F -L /dev/stderr -f /etc/ganesha/ganesha.conf -p /run/ganesha/ganesha.pid
+### ──────────────────────────── Storage ───────────────────────────────────────
+
+setup_storage() {
+  mkdir -p "$SHARE_PATH"
+
+  if [[ "$USE_VOLUME" == "true" ]]; then
+    log "Storage mode: Docker volume"
+
+    if mountpoint -q "$NFS_VOLUME_PATH"; then
+      log "Docker volume detected at $NFS_VOLUME_PATH"
+
+      if [[ "$NFS_VOLUME_PATH" != "$SHARE_PATH" ]]; then
+        log "Bind mounting $NFS_VOLUME_PATH -> $SHARE_PATH"
+        mount --bind "$NFS_VOLUME_PATH" "$SHARE_PATH" || {
+          log "ERROR: Failed to bind mount $NFS_VOLUME_PATH"
+          exit 1
+        }
+      fi
+
+      log "Using Docker volume for NFS storage (persistent)"
+    else
+      log "WARN: No volume mounted at $NFS_VOLUME_PATH, falling back to loopback mode"
+      USE_VOLUME=false
+    fi
+  fi
+
+  if [[ "$USE_VOLUME" != "true" ]]; then
+    log "Storage mode: loopback file (${NFS_SIZE_MB} MB)"
+
+    if [[ ! -f /nfs-disk.img ]]; then
+      log "Creating new NFS disk image (${NFS_SIZE_MB} MB)..."
+      truncate -s "${NFS_SIZE_MB}M" /nfs-disk.img
+      mkfs.ext4 -q /nfs-disk.img
+    else
+      log "Existing disk image found, resizing to ${NFS_SIZE_MB} MB..."
+      truncate -s "${NFS_SIZE_MB}M" /nfs-disk.img
+      e2fsck -f -y /nfs-disk.img || true
+      resize2fs /nfs-disk.img
+    fi
+
+    log "Mounting ext4 filesystem..."
+    mount -o loop /nfs-disk.img "$SHARE_PATH" || {
+      log "ERROR: Failed to mount /nfs-disk.img"
+      exit 1
+    }
+  fi
+
+  chmod 777 "$SHARE_PATH"
+  log "NFS share ready at $SHARE_PATH"
+}
+
+### ─────────────────────────── rpcbind ───────────────────────────────────────
+
+start_rpcbind() {
+  log "Setting up rpcbind..."
+  mkdir -p /run/rpcbind /var/lib/rpcbind
+  chmod 755 /run/rpcbind
+
+  log "Starting rpcbind..."
+  rpcbind -w -f &
+  RPCBIND_PID=$!
+
+  wait_for "rpcbind" "rpcinfo -T tcp 127.0.0.1 100000 4" 10
+}
+
+### ──────────────────────────── dbus ─────────────────────────────────────────
+
+start_dbus() {
+  log "Setting up dbus-daemon..."
+  mkdir -p /run/dbus /var/lib/dbus
+  [[ ! -f /var/lib/dbus/machine-id ]] && dbus-uuidgen --ensure=/var/lib/dbus/machine-id
+
+  log "Starting dbus-daemon..."
+  dbus-daemon --system --nofork --nopidfile &
+  DBUS_PID=$!
+
+  wait_for "dbus-daemon" "[ -S /run/dbus/system_bus_socket ]" 10
+}
+
+### ─────────────────────────── Ganesha ───────────────────────────────────────
+
+start_ganesha() {
+  local conf="/etc/ganesha/ganesha.conf"
+
+  if [[ ! -f "$conf" ]]; then
+    log "ERROR: Ganesha config not found at $conf"
+    exit 1
+  fi
+  log "Using Ganesha config: $conf"
+
+  mkdir -p /run/ganesha /var/lib/nfs/ganesha
+  chmod 755 /run/ganesha /var/lib/nfs/ganesha
+
+  log "Starting NFS-Ganesha (NFSv4 user-space server)..."
+  log "NFS port: ${NFS_PORT}, MountD port: ${MOUNTD_PORT}"
+
+  # Run in foreground but NOT via exec — we need the shell alive for the trap.
+  ganesha.nfsd -F -L /dev/stderr -f "$conf" -p /run/ganesha/ganesha.pid &
+  GANESHA_PID=$!
+
+  # Brief health check: make sure the process didn't die immediately
+  sleep 2
+  if ! kill -0 "$GANESHA_PID" 2>/dev/null; then
+    log "ERROR: ganesha.nfsd exited immediately (check /dev/stderr for details)"
+    exit 1
+  fi
+
+  log "NFS-Ganesha started (PID: $GANESHA_PID)"
+}
+
+### ──────────────────────────── Main ─────────────────────────────────────────
+
+main() {
+  log "================================================"
+  log "Starting NFS-Ganesha Server"
+  log "System: $(uname -r)"
+  log "================================================"
+
+  setup_storage
+  start_rpcbind
+  start_dbus
+  start_ganesha
+
+  log "================================================"
+  log "NFS-Ganesha is running and serving $SHARE_PATH"
+  log "Clients can mount via:  mount -t nfs -o vers=4.1 <this-host>:/ /mnt/nfs"
+  log "================================================"
+
+  # Wait for ganesha to exit. If it dies, the EXIT trap fires cleanup().
+  wait "$GANESHA_PID"
+}
+
+main "$@"
