@@ -1,0 +1,42 @@
+version: "3.8"
+
+services:
+  nfs-ganesha-server:
+    privileged: true
+    build: .
+    image: suse-nfs-server-nfs-ganesha-server:latest
+    container_name: nfs-ganesha-server
+    # Ports
+    ports:
+      # NFS v4
+      - "2049:2049/tcp"
+      - "2049:2049/udp"
+      # MountD
+      - "20048:20048/tcp"
+      - "20048:20048/udp"
+      # RPCBind (changed host port to 1111)
+      - "1111:111/tcp"
+      - "1111:111/udp"
+
+    # Environment variables
+    environment:
+      - NFS_SIZE_MB=2048 # 2GB NFS storage
+      - NFS_PORT=2049
+      - MOUNTD_PORT=20048
+
+    # Volumes for persistent data (optional)
+    # Uncomment the volumes section below to customize
+    # volumes:
+    #   - ./config/ganesha.conf:/etc/ganesha/ganesha.conf:ro
+    #   - ./data:/data
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Healthcheck (optional)
+    healthcheck:
+      test: ["CMD", "rpcinfo", "-t", "127.0.0.1", "nfs", "4"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

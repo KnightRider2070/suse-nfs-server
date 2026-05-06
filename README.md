@@ -1,114 +1,468 @@
-# **📦 suse-nfs-server - Lightweight, Containerized NFS Server**
+# 📦 suse-nfs-server - Containerized NFSv4 Server with NFS-Ganesha
 
-**suse-nfs-server** is a highly flexible, containerized **NFS server** built on **openSUSE Leap 15.5**, designed for **easy deployment**, and **dynamic storage configuration** without the need for Docker volumes.
-
----
-
-## **✨ Features**
-
-**Supports NFSv3 & NFSv4** – Compatible with modern clients  
-**Containerized for Flexibility** – Runs seamlessly in **Docker & Kubernetes**  
-**No Docker Volume Required** – Uses a **loopback ext4 filesystem** for persistence  
+**suse-nfs-server** is a modern, containerized **NFSv4 server** built on **openSUSE Leap 15.5** using **NFS-Ganesha** (user-space NFS implementation). This project provides a **secure, lightweight, and flexible** NFS solution that runs **without privileged mode** and supports **dynamic storage configuration**.
 
 ---
 
-## **🚀 Quick Start**
+## ✨ Features
 
-Run the **NFS server container** with default settings (100MB storage):
-
-```sh
-docker run -d --name nfs-server --privileged \
-  -p 2049:2049 -p 20048:20048 \
-  ghcr.io/knightrider2070/suse-nfs-server
-```
-
-### **📌 Customizing NFS Storage Size (Example: 2GB)**
-
-```sh
-docker run -d --name nfs-server --privileged \
-  -e NFS_SIZE_MB=2048 \  # Set storage to 2GB
-  -p 2049:2049 -p 20048:20048 \
-  ghcr.io/knightrider2070/suse-nfs-server
-```
-
-### **📌 Customizing log interval (Example: 5 seconds)**
-
-```sh
-docker run -d --name nfs-server --privileged \
-  -e MONITOR_INTERVAL=5 \
-  -p 2049:2049 -p 20048:20048 \
-  ghcr.io/knightrider2070/suse-nfs-server
-```
-
-> **Note**: `--privileged` is required to allow the container to mount special pseudo-filesystems like `nfsd`.
+✅ **NFSv4 Only** – Modern NFS protocol without legacy complexity  
+✅ **NFS-Ganesha** – User-space NFS server for better security and isolation  
+✅ **Non-Privileged Mode** – Runs with minimal Linux capabilities (no `--privileged`)  
+✅ **Single Container** – All services (rpcbind, dbus, ganesha) in one container  
+✅ **Dynamic Storage** – Configure storage size at runtime with environment variables  
+✅ **No Docker Volume Required** – Uses loopback ext4 filesystem for persistence  
+✅ **Container Best Practices** – Based on [contained-ganesha](https://github.com/NicolasT/contained-ganesha) approach
 
 ---
 
-## **🛠 Configuration & Environment Variables**
+## 🚀 Quick Start
 
-| Variable      | Default | Description                                   |
-|---------------|---------|-----------------------------------------------|
-| `NFS_SIZE_MB` | `100`   | Set NFS storage size dynamically (in MB)      |
-| `MONITOR_INTERVAL` | `1` | Frequency (in seconds) to check connections  |
-
-If you want to customize further (e.g., the exports file or mount options), simply build your own image with additional configuration.
-
----
-
-## **Why Mount `/proc/fs/nfsd`?**
-
-Inside the container, the script runs:
+### Recommended: Non-Privileged Mode (Secure)
 
 ```bash
-mkdir -p /proc/fs/nfsd
-mount -t nfsd nfsd /proc/fs/nfsd
+docker run -d --name nfs-server \
+  --cap-drop ALL \
+  --cap-add CHOWN \
+  --cap-add DAC_OVERRIDE \
+  --cap-add FOWNER \
+  --cap-add FSETID \
+  --cap-add NET_BIND_SERVICE \
+  --cap-add SETGID \
+  --cap-add SETUID \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -e NFS_SIZE_MB=500 \
+  ghcr.io/knightrider2070/suse-nfs-server
 ```
 
-This **binds the kernel’s NFS filesystem** into the container so that `rpc.nfsd` can communicate with the host kernel’s NFS subsystem. Without it, **NFS exports** wouldn’t function correctly in a containerized environment.
+### Simple Mode (for Testing)
+
+```bash
+docker run -d --name nfs-server \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -e NFS_SIZE_MB=1024 \
+  ghcr.io/knightrider2070/suse-nfs-server
+```
+
+> **🔒 Security Note**: Unlike traditional kernel NFS servers, **NFS-Ganesha does NOT require `--privileged` mode**! This container runs securely with minimal Linux capabilities, making it suitable for production environments with strict security policies.
 
 ---
 
-## **Connecting to the NFS Server**
+## 🛠 Configuration & Environment Variables
 
-**Requires** `nfs-client` (or equivalent) on your client system to mount NFS shares.
+| Variable          | Default       | Description                                          |
+|-------------------|---------------|------------------------------------------------------|
+| `NFS_SIZE_MB`     | `100`         | NFS storage size in MB (loopback mode only)          |
+| `NFS_PORT`        | `2049`        | NFS service port                                     |
+| `MOUNTD_PORT`     | `20048`       | Mount daemon port                                    |
+| `USE_VOLUME`      | `false`       | Use Docker volume instead of loopback file           |
+| `NFS_VOLUME_PATH` | `/nfs-volume` | Path where Docker volume is mounted                  |
 
-> **Note**: If your NFS client **itself** runs in a Docker container, you must add the `--privileged` flag to let it mount remote NFS shares.
+---
 
-### **🔹 Linux Clients (Tested)**
+## 💾 Storage Modes
 
-Mount the NFS share from another Linux container or system.
-**NFSv4** (root export is `/`):
+This container supports **two storage modes** for NFS data:
 
-```sh
-mount.nfs4 172.17.0.2:/ /mnt/nfs
+### 1. Loopback File Mode (Default)
+
+Uses an internal loopback ext4 filesystem stored in `/nfs-disk.img`. This is the default mode and requires no additional configuration.
+
+**Characteristics:**
+- ✅ Simple setup - no volume configuration needed
+- ✅ Dynamic size - set with `NFS_SIZE_MB` environment variable
+- ⚠️ Non-persistent - data is lost when container is removed (unless you mount a volume at `/nfs-disk.img`)
+- 📦 Self-contained - all storage inside the container
+
+**Example:**
+```bash
+docker run -d --name nfs-server \
+  --cap-drop ALL \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --cap-add FSETID --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -e NFS_SIZE_MB=1024 \
+  ghcr.io/knightrider2070/suse-nfs-server
 ```
 
-If you’d prefer to explicitly mount `/mnt/nfs-share` under NFSv4:
+### 2. Docker Volume Mode (Persistent Storage)
 
-```sh
-mount -t nfs4 172.17.0.2:/mnt/nfs-share /mnt/nfs
+Uses a Docker volume or bind mount for NFS data. This provides true persistence across container restarts and removals.
+
+**Characteristics:**
+- ✅ Fully persistent - data survives container removal
+- ✅ Flexible - use named volumes or bind mounts
+- ✅ Better performance - no loopback overhead
+- 🔧 Requires volume setup
+
+**Example with Named Volume:**
+```bash
+# Create a named volume
+docker volume create nfs-data
+
+# Run the container with the volume
+docker run -d --name nfs-server \
+  --cap-drop ALL \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --cap-add FSETID --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -v nfs-data:/nfs-volume \
+  -e USE_VOLUME=true \
+  ghcr.io/knightrider2070/suse-nfs-server
 ```
 
-For **NFSv3**:
+**Example with Bind Mount:**
+```bash
+# Create a directory on the host
+mkdir -p /path/to/nfs-data
 
-```sh
-mount -t nfs -o vers=3 172.17.0.2:/mnt/nfs-share /mnt/nfs
+# Run the container with a bind mount
+docker run -d --name nfs-server \
+  --cap-drop ALL \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --cap-add FSETID --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -v /path/to/nfs-data:/nfs-volume \
+  -e USE_VOLUME=true \
+  ghcr.io/knightrider2070/suse-nfs-server
+```
+
+### Comparison
+
+| Feature            | Loopback Mode          | Volume Mode                |
+|--------------------|------------------------|----------------------------|
+| Setup              | Simple (default)       | Requires volume creation   |
+| Persistence        | ❌ Non-persistent*     | ✅ Persistent             |
+| Performance        | Good                   | Better (no loopback)       |
+| Size Configuration | `NFS_SIZE_MB`          | Volume/filesystem size     |
+| Use Case           | Testing, temporary     | Production, long-term      |
+
+*Data is lost when container is removed unless `/nfs-disk.img` is mounted as a volume
+
+---
+
+## 🔐 Security & Capabilities
+
+This container follows security best practices from the [contained-ganesha](https://github.com/NicolasT/contained-ganesha) project:
+
+### Required Linux Capabilities
+
+Instead of running with `--privileged`, only the following capabilities are needed:
+
+- `CHOWN` – Change file ownership
+- `DAC_OVERRIDE` – Bypass file read, write, and execute permission checks
+- `FOWNER` – Bypass permission checks on operations that normally require filesystem UID
+- `FSETID` – Don't clear set-user-ID and set-group-ID mode bits
+- `NET_BIND_SERVICE` – Bind to privileged ports (< 1024)
+- `SETGID` – Make arbitrary manipulations of process GIDs
+- `SETUID` – Make arbitrary manipulations of process UIDs
+
+### How to Run Without Privileged Mode
+
+**NFS-Ganesha was specifically designed to run as a user-space process**, eliminating the need for privileged containers that traditional kernel NFS servers require. Here's how to leverage this security benefit:
+
+**❌ Old Way (Kernel NFS - Requires Privileged Mode):**
+```bash
+# Kernel NFS requires --privileged flag
+docker run -d --privileged \
+  -p 2049:2049 \
+  old-kernel-nfs-image
+```
+
+**✅ New Way (NFS-Ganesha - No Privileged Mode Needed):**
+```bash
+# Option 1: Maximum Security - Drop all capabilities, add only what's needed
+docker run -d --name nfs-server \
+  --cap-drop ALL \
+  --cap-add CHOWN \
+  --cap-add DAC_OVERRIDE \
+  --cap-add FOWNER \
+  --cap-add FSETID \
+  --cap-add NET_BIND_SERVICE \
+  --cap-add SETGID \
+  --cap-add SETUID \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -e NFS_SIZE_MB=500 \
+  ghcr.io/knightrider2070/suse-nfs-server
+
+# Option 2: Simple Mode - Let Docker use default capabilities (still secure)
+docker run -d --name nfs-server \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -e NFS_SIZE_MB=1024 \
+  ghcr.io/knightrider2070/suse-nfs-server
+```
+
+**Key Benefits:**
+- 🔒 **Reduced Attack Surface** – Only 7 specific capabilities vs. full system access
+- 🛡️ **Container Isolation** – No access to host kernel modules or `/proc/fs/nfsd`
+- ☁️ **Cloud-Native** – Compatible with security-restricted environments (Kubernetes, cloud platforms)
+- 🚀 **Production-Ready** – Meets enterprise security requirements without privileged mode
+
+### Why NFS-Ganesha?
+
+NFS-Ganesha is a **user-space NFS server** that offers several advantages:
+
+- ✅ **No kernel NFS dependencies** – Doesn't require `/proc/fs/nfsd` mount
+- ✅ **Better containerization** – All processes run in user space
+- ✅ **NFSv4 native** – Modern protocol without legacy NFSv3 complexity
+- ✅ **Flexible backends** – Supports VFS, CEPH, GLUSTER, and more (FSAL)
+- ✅ **Simpler architecture** – Fewer daemons and dependencies
+
+---
+
+## 📡 Connecting to the NFS Server
+
+### Prerequisites
+
+Install NFS client tools on your client system:
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install nfs-common
+
+# RHEL/CentOS/Fedora
+sudo dnf install nfs-utils
+
+# openSUSE
+sudo zypper install nfs-client
+```
+
+### Mounting the NFSv4 Share
+
+**Find the server IP:**
+
+```bash
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' nfs-server
+```
+
+**Mount the share (NFSv4):**
+
+```bash
+# Create mount point
+sudo mkdir -p /mnt/nfs
+
+# Mount the NFSv4 root export
+sudo mount -t nfs4 -o vers=4.0 <server-ip>:/ /mnt/nfs
+
+# Example:
+sudo mount -t nfs4 -o vers=4.0 172.17.0.2:/ /mnt/nfs
+```
+
+**Verify the mount:**
+
+```bash
+df -h /mnt/nfs
+ls -la /mnt/nfs
+```
+
+**Unmount when done:**
+
+```bash
+sudo umount /mnt/nfs
 ```
 
 ---
 
-## **🌍 Contribute & Get Support**
+## 🐳 Advanced Usage
+
+### Custom Storage Size
+
+```bash
+docker run -d --name nfs-server \
+  --cap-drop ALL \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --cap-add FSETID --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -e NFS_SIZE_MB=5120 \
+  ghcr.io/knightrider2070/suse-nfs-server
+```
+
+### Custom Ganesha Configuration
+
+You can provide your own `ganesha.conf` file:
+
+```bash
+docker run -d --name nfs-server \
+  --cap-drop ALL \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --cap-add FSETID --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
+  -p 2049:2049 -p 20048:20048 -p 111:111 \
+  -v ./my-ganesha.conf:/etc/ganesha/ganesha.conf:ro \
+  -e NFS_SIZE_MB=1024 \
+  ghcr.io/knightrider2070/suse-nfs-server
+```
+
+### Docker Compose Example
+
+**Loopback Mode (Default):**
+```yaml
+version: '3.8'
+
+services:
+  nfs-server:
+    image: ghcr.io/knightrider2070/suse-nfs-server
+    container_name: nfs-ganesha-server
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    ports:
+      - "2049:2049"    # NFS
+      - "20048:20048"  # MountD
+      - "111:111"      # RPCBind
+    environment:
+      - NFS_SIZE_MB=2048
+    restart: unless-stopped
+```
+
+**Volume Mode (Persistent Storage):**
+```yaml
+version: '3.8'
+
+services:
+  nfs-server:
+    image: ghcr.io/knightrider2070/suse-nfs-server
+    container_name: nfs-ganesha-server
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    ports:
+      - "2049:2049"    # NFS
+      - "20048:20048"  # MountD
+      - "111:111"      # RPCBind
+    environment:
+      - USE_VOLUME=true
+    volumes:
+      - nfs-data:/nfs-volume
+    restart: unless-stopped
+
+volumes:
+  nfs-data:
+```
+
+---
+
+## 🏗️ Architecture
+
+This implementation runs all required services in a **single container**:
+
+1. **rpcbind** – Port mapper service (RPC portmapper on port 111)
+2. **dbus-daemon** – System message bus (required by NFS-Ganesha)
+3. **ganesha.nfsd** – NFS-Ganesha server (NFSv4 on port 2049)
+
+All services start automatically and are managed by the entrypoint script.
+
+### Why All Services in One Container?
+
+While the original [contained-ganesha](https://github.com/NicolasT/contained-ganesha) project uses separate containers for each service (following microservices principles), this implementation combines them for simplicity and ease of deployment in single-server scenarios. For production Kubernetes deployments, consider using the multi-container approach.
+
+---
+
+## 📝 Differences from Kernel NFS
+
+| Feature                 | NFS-Ganesha (This Image)     | Kernel NFS            |
+| ----------------------- | ---------------------------- | --------------------- |
+| **Mode**                | User-space                   | Kernel-space          |
+| **Privileged Mode**     | ❌ Not required               | ✅ Required            |
+| **NFSv4 Support**       | ✅ Native                     | ✅ Supported           |
+| **NFSv3 Support**       | ⚠️ Optional (disabled)        | ✅ Default             |
+| **Dependencies**        | Minimal                      | Kernel modules        |
+| **Portability**         | High (any container runtime) | Requires kernel NFS   |
+| **Backend Flexibility** | Multiple FSALs               | Local filesystem only |
+
+---
+
+## 🔧 Troubleshooting
+
+### Check Container Logs
+
+```bash
+docker logs nfs-server
+```
+
+### Verify Services are Running
+
+```bash
+# Check rpcbind
+docker exec nfs-server rpcinfo -p
+
+# Check Ganesha is listening
+docker exec nfs-server ss -tlnp | grep 2049
+```
+
+### Test from Host
+
+```bash
+# Check if NFS port is accessible
+nc -zv <server-ip> 2049
+
+# Try to show mount info
+showmount -e <server-ip>
+```
+
+### Common Issues
+
+**1. "Connection refused" when mounting**
+- Ensure all ports are exposed: 111, 2049, 20048
+- Check firewall rules on host and client
+
+**2. "Permission denied" when writing files**
+- Check the `Squash` setting in `ganesha.conf`
+- Verify file permissions in `/mnt/nfs-share` inside container
+
+**3. Mount succeeds but no files visible**
+- Verify the storage was created: `docker exec nfs-server df -h /mnt/nfs-share`
+- Check logs for mount errors
+
+---
+
+## 🎯 Use Cases
+
+- **Development/Testing** – Quick NFS server for testing applications
+- **Container Storage** – Shared storage for containerized applications
+- **Kubernetes** – NFS-based PersistentVolumes (consider multi-container approach)
+- **Media Servers** – Share media libraries across devices
+- **Backup Storage** – Central backup location for multiple machines
+
+---
+
+## 🌍 Contribute & Get Support
 
 💡 **Contributions welcome!** If you have improvements or bug fixes, feel free to submit a PR or create an issue.
 
 🔗 **GitHub Repository:**  
-[![GitHub](https://img.shields.io/badge/GitHub-Repo-blue?logo=github&style=flat-square)](https://github.com/KnightRider2070/suse-nfs-server)  
-Browse the source code, fork the project, and submit pull requests.
+[![GitHub](https://img.shields.io/badge/GitHub-Repo-blue?logo=github&style=flat-square)](https://github.com/KnightRider2070/suse-nfs-server)
 
 🐞 **Report Issues & Request Features:**  
-[![GitHub Issues](https://img.shields.io/badge/GitHub-Issues-red?logo=github&style=flat-square)](https://github.com/KnightRider2070/suse-nfs-server/issues)  
-If you encounter problems, report them on GitHub Issues.
+[![GitHub Issues](https://img.shields.io/badge/GitHub-Issues-red?logo=github&style=flat-square)](https://github.com/KnightRider2070/suse-nfs-server/issues)
 
 ---
 
-Enjoy a **lightweight**, **flexible** NFS server experience on openSUSE Leap!
+## 📚 References
+
+- [NFS-Ganesha Project](https://nfs-ganesha.github.io/)
+- [contained-ganesha](https://github.com/NicolasT/contained-ganesha) – Inspiration for this implementation
+- [NFSv4 RFC 7530](https://tools.ietf.org/html/rfc7530)
+
+---
+
+## 📄 License
+
+This project is licensed under the terms specified in the LICENSE file.
+
+---
+
+**Enjoy a modern, secure, and flexible NFSv4 server experience! 🚀**
